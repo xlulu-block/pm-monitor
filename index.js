@@ -1,11 +1,14 @@
-import WebSocket from "ws";
 import axios from "axios";
 
 const ADDRESS   = (process.env.ADDRESS || "").toLowerCase();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID   = process.env.CHAT_ID;
 
-const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
+const POLL_URL = `https://data-api.polymarket.com/trades`;
+const POLL_INTERVAL_MS = 10000;  // 10秒轮询一次，可调大到 15000-30000 避免 rate limit
+const LIMIT = 20;  // 每次拉取最近 20 条，够覆盖间隔内的新交易
+
+let lastProcessedTimestamp = 0;  // 记录最后处理的 trade timestamp，防止重复
 
 async function sendTG(text) {
   try {
@@ -14,76 +17,80 @@ async function sendTG(text) {
       text,
       parse_mode: "HTML"           // 支持 <b> 标签
     });
+    console.log("TG 推送成功:", text.slice(0, 100));
   } catch (err) {
-    console.error("Telegram 发送失败", err.response?.data || err.message);
+    console.error("Telegram 发送失败:", err.response?.data || err.message);
   }
 }
 
-function connect() {
-  const ws = new WebSocket(WS_URL);
-
-  ws.on("open", () => {
-    console.log("WS 已连接 (market channel，无需密钥)");
-
-    // 订阅全市场更新（[] = 所有市场；可改成具体 token_ids 数组来减少数据量）
-    const subscribeMsg = {
-      assets_ids: [],               // 空 = 全市场 trades/fills
-      type: "market",
-      custom_feature_enabled: true  // 启用更多事件，包括 trade/fill 相关
+async function pollTrades() {
+  try {
+    // 示例：查询 maker 或 taker 是你的地址的最新 trades
+    const params = {
+      user: ADDRESS,
+      limit: LIMIT,
+      // takerOnly: false,  // 默认 false，包含 maker 和 taker
     };
 
-    ws.send(JSON.stringify(subscribeMsg));
-    console.log("已发送订阅:", JSON.stringify(subscribeMsg));
-  });
+    const res = await axios.get(POLL_URL, { params });
+    const trades = res.data || [];
 
-  ws.on("message", async (msg) => {
-    try {
-      const raw = msg.toString();
-      const data = JSON.parse(raw);
-      
-      // 调试用：先打印所有消息结构（上线后可注释掉，避免日志爆炸）
-      // console.log("收到消息:", JSON.stringify(data, null, 2));
-
-      // Polymarket market channel 的 fill/trade 常见结构
-      // 可能在 data.event_type === "trade" 或 "fill"，或直接在 payload 里
-      if (data.event_type === "trade" || data.event === "fill" || data.type === "fill" || data.payload?.event === "fill") {
-        const fill = data.payload || data;  // 兼容不同嵌套
-
-        const maker = (fill.maker || fill.maker_address || "").toLowerCase();
-        const taker = (fill.taker || fill.taker_address || "").toLowerCase();
-        const side = (fill.side || fill.order_side || "").toLowerCase();
-        const shares = Number(fill.size || fill.amount || fill.quantity || fill.shares || 0);
-
-        // 只处理你的地址参与的买入，且 >=1000 shares
-        if ((maker === ADDRESS || taker === ADDRESS) &&
-            shares >= 1000 &&
-            side === "buy") {
-
-          const text = `🚨 <b>你的地址大额买入</b>\n\n` +
-                       `Shares: ${shares}\n` +
-                       `Price: ${fill.price ?? fill.avg_price ?? fill.last_price ?? "—"} USDC\n` +
-                       `Market: ${fill.market ?? fill.condition_id ?? fill.token_id ?? "未知"}\n` +
-                       `Maker: ${maker.slice(0,6)}...${maker.slice(-4)}\n` +
-                       `Taker: ${taker.slice(0,6)}...${taker.slice(-4)}`;
-
-          await sendTG(text);
-          console.log("已推送大额买入:", shares);
-        }
-      }
-    } catch (err) {
-      console.error("消息解析失败:", err.message, msg.toString().slice(0, 200));  // 截断避免日志过长
+    if (!Array.isArray(trades)) {
+      console.warn("Trades 数据不是数组:", trades);
+      return;
     }
-  });
 
-  ws.on("close", (code, reason) => {
-    console.log(`WS 断开 - code: ${code || "未知"}, reason: ${reason || "无"} → 3秒后重连`);
-    setTimeout(connect, 3000);
-  });
+    console.log(`拉取到 ${trades.length} 条 trades`);
 
-  ws.on("error", (err) => {
-    console.error("WebSocket 错误:", err.message);
-    ws.close();
-  });
+    for (const trade of trades.reverse()) {  // 从旧到新处理，避免重复
+      const timestamp = Number(trade.timestamp || 0);  // timestamp 可能是 unix ms 或 s，根据实际调整
+
+      if (timestamp <= lastProcessedTimestamp) continue;  // 已处理过
+
+      const shares = Number(trade.size || trade.amount || 0);
+      const side = (trade.side || "").toUpperCase();  // BUY / SELL
+
+      if (shares >= 1000) {
+        const price = trade.price ?? "—";
+        const market = trade.conditionId ?? trade.title ?? trade.slug ?? "未知";
+        const outcome = trade.outcome ?? "—";
+
+        let alertType = "";
+        if (side === "BUY") {
+          alertType = "大额买入";
+        } else if (side === "SELL") {
+          alertType = "大额卖出";
+        } else {
+          continue;  // 未知 side，跳过
+        }
+
+        const text = `🚨 <b>Polymarket ${alertType} (你的地址)</b>\n\n` +
+                     `Shares: ${shares}\n` +
+                     `Price: ${price} USDC\n` +
+                     `Outcome: ${outcome}\n` +
+                     `Market: ${market}\n` +
+                     `Time: ${new Date(timestamp).toLocaleString() || "—"}`;
+
+        await sendTG(text);
+      }
+
+      // 更新最后处理时间
+      if (timestamp > lastProcessedTimestamp) {
+        lastProcessedTimestamp = timestamp;
+      }
+    }
+  } catch (err) {
+    console.error("轮询失败:", err.message, err.response?.data || "");
+  }
 }
-// 启动
-connect();
+
+// 启动轮询
+console.log(`启动轮询监控地址: ${ADDRESS}`);
+setInterval(pollTrades, POLL_INTERVAL_MS);
+pollTrades();  // 立即执行一次
+
+// 可选：处理进程退出时清理（Railway 不太需要）
+process.on("SIGTERM", () => {
+  console.log("进程终止");
+  process.exit(0);
+});
