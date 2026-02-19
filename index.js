@@ -5,7 +5,7 @@ const ADDRESS   = (process.env.ADDRESS || "").toLowerCase();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID   = process.env.CHAT_ID;
 
-const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/websocket";
+const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/user";
 
 async function sendTG(text) {
   try {
