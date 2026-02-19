@@ -26,7 +26,7 @@ function connect() {
 
     ws.send(JSON.stringify({
       type: "subscribe",
-      channel: "user",
+      channel: ["user"],
       address: ADDRESS
     }));
   });
