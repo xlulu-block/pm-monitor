@@ -4,8 +4,8 @@ import axios from "axios";
 const ADDRESS = process.env.ADDRESS;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-
-const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws";
+console.log("ADDRESS=", process.env.ADDRESS);
+console.log("BOT_TOKEN exists=", !!process.env.BOT_TOKEN);const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws";
 
 async function sendTG(text) {
   await axios.post(
