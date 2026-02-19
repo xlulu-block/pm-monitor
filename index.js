@@ -5,11 +5,11 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID   = process.env.CHAT_ID;
 
 const POLL_URL = `https://data-api.polymarket.com/trades`;
-const POLL_INTERVAL_MS = 30000;  // 先调到 30秒测试，避免太频繁
+const POLL_INTERVAL_MS = 30000;  // 30秒
 const LIMIT = 20;
 
-let lastProcessedTimestamp = Date.now() - 5 * 60 * 1000;  // 启动时设为 5 分钟前，只看最近的
-const processedTradeKeys = new Set();  // 用 timestamp + size + side 作为 key 防重（或用 id 如果有）
+let lastProcessedTimestamp = Date.now();  // 只监控启动后的新交易
+const processedTradeKeys = new Set();
 
 async function sendTG(text) {
   try {
@@ -35,44 +35,44 @@ async function pollTrades() {
     const trades = res.data || [];
 
     if (!Array.isArray(trades)) {
-      console.warn("Trades 数据不是数组:", trades);
+      console.warn("Trades 不是数组:", trades);
       return;
     }
 
-    console.log(`拉取到 ${trades.length} 条 trades (最新在前)`);
+    console.log(`拉取到 ${trades.length} 条 trades`);
 
-    // 假设 trades 已按时间降序（最新先），我们从头（最新）到尾处理
+    let hasNew = false;
+
     for (const trade of trades) {
-      const timestamp = Number(trade.timestamp || trade.createdAt || 0) * 1000;  // 假设秒转 ms，如果已经是 ms 则不变
+      // timestamp 处理：假设秒或 ms，兼容字符串
+      let timestampRaw = trade.timestamp || trade.createdAt || 0;
+      let timestamp = Number(timestampRaw);
+      if (isNaN(timestamp)) timestamp = 0;
+      if (timestamp < 1e12) timestamp *= 1000;  // 秒转 ms
+
       const shares = Number(trade.size || trade.amount || 0);
       const side = (trade.side || "").toUpperCase();
+      const price = trade.price ?? trade.avgPrice ?? "—";
 
-      // 调试日志：每条 trade 都打印关键信息
-      console.log(`检查 trade: ts=${timestamp}, side=${side}, shares=${shares}, price=${trade.price ?? '—'}`);
+      // 日志：详细打印
+      console.log(`检查 trade: ts=${timestamp} (${new Date(timestamp).toLocaleString() || '无效'}), side=${side}, shares=${shares}, price=${price}, conditionId=${trade.conditionId || '无'}`);
 
-      if (timestamp <= lastProcessedTimestamp) continue;
+      if (timestamp <= lastProcessedTimestamp || timestamp === 0) {
+        console.log(`跳过: ts <= lastProcessedTimestamp 或无效`);
+        continue;
+      }
 
-      // 额外防重 key（防止相同 ts 的多条）
-      const tradeKey = `${timestamp}-${shares}-${side}`;
+      // 防重 key
+      const tradeKey = `${timestamp}-${side}-${shares}-${price}`;
       if (processedTradeKeys.has(tradeKey)) {
         console.log(`跳过已处理 key: ${tradeKey}`);
         continue;
       }
 
-      if (shares >= 1000) {
-        let alertType = "";
-        if (side === "BUY") {
-          alertType = "大额买入";
-        } else if (side === "SELL") {
-          alertType = "大额卖出";
-        } else {
-          console.log(`未知 side: ${side}, 跳过`);
-          continue;
-        }
-
-        const price = trade.price ?? "—";
-        const market = trade.conditionId ?? trade.title ?? trade.slug ?? "未知";
-        const outcome = trade.outcome ?? "—";
+      if (shares >= 1000 && (side === "BUY" || side === "SELL")) {
+        const alertType = side === "BUY" ? "大额买入" : "大额卖出";
+        const market = trade.conditionId || trade.title || trade.slug || "未知";
+        const outcome = trade.outcome || "—";
 
         const text = `🚨 <b>Polymarket ${alertType} (你的地址)</b>\n\n` +
                      `Shares: ${shares}\n` +
@@ -83,24 +83,31 @@ async function pollTrades() {
 
         await sendTG(text);
 
-        // 标记已处理
         processedTradeKeys.add(tradeKey);
+        console.log(`推送并记录 key: ${tradeKey}`);
+        hasNew = true;
       }
 
-      // 更新最后时间（即使没推送，也更新，避免卡住）
+      // 更新 ts
       if (timestamp > lastProcessedTimestamp) {
         lastProcessedTimestamp = timestamp;
+        console.log(`更新 lastProcessedTimestamp → ${timestamp}`);
       }
     }
+
+    if (!hasNew && trades.length > 0) {
+      console.log("无新大额交易（所有已跳过或历史）");
+    }
   } catch (err) {
-    console.error("轮询失败:", err.message, err.response?.data || err.response?.status);
+    console.error("轮询失败:", err.message);
+    if (err.response) console.error("状态:", err.response.status, "数据:", JSON.stringify(err.response.data || {}));
   }
 }
 
 // 启动
-console.log(`启动轮询监控地址: ${ADDRESS} (间隔 ${POLL_INTERVAL_MS/1000}s)`);
+console.log(`监控启动 - 地址: ${ADDRESS} | 间隔: ${POLL_INTERVAL_MS/1000}s | 只新交易`);
 setInterval(pollTrades, POLL_INTERVAL_MS);
-pollTrades();  // 立即一次
+pollTrades();
 
 process.on("SIGTERM", () => {
   console.log("进程终止");
