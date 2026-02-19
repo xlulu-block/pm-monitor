@@ -1,7 +1,7 @@
 import WebSocket from "ws";
 import axios from "axios";
 
-const ADDRESS = process.env.ADDRESS.toLowerCase();
+const ADDRESS = process.env.ADDRESS;
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 
