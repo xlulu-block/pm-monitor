@@ -23,54 +23,60 @@ function connect() {
   const ws = new WebSocket(WS_URL);
 
   ws.on("open", () => {
-    console.log("WS 已连接");
-    ws.send(JSON.stringify({
-      topic: `user:${ADDRESS}`,
-      event: "phx_join",
-      payload: {},
-      ref: "1"
-    }));
+    console.log("WS 已连接 (market channel，无需密钥)");
+
+    // 订阅全市场更新（[] = 所有市场；可改成具体 token_ids 数组来减少数据量）
+    const subscribeMsg = {
+      assets_ids: [],               // 空 = 全市场 trades/fills
+      type: "market",
+      custom_feature_enabled: true  // 启用更多事件，包括 trade/fill 相关
+    };
+
+    ws.send(JSON.stringify(subscribeMsg));
+    console.log("已发送订阅:", JSON.stringify(subscribeMsg));
   });
 
   ws.on("message", async (msg) => {
     try {
-      const data = JSON.parse(msg.toString());
+      const raw = msg.toString();
+      const data = JSON.parse(raw);
+      
+      // 调试用：先打印所有消息结构（上线后可注释掉，避免日志爆炸）
+      // console.log("收到消息:", JSON.stringify(data, null, 2));
 
-      // 目前最常见的两种 payload 结构（任选其一，或都兼容）
-      if (data.event === "fill") {
-        // 老格式 / 部分市场格式
-        const fill = data.payload || data;
-        const shares = Number(fill.size ?? fill.amount ?? 0);
+      // Polymarket market channel 的 fill/trade 常见结构
+      // 可能在 data.event_type === "trade" 或 "fill"，或直接在 payload 里
+      if (data.event_type === "trade" || data.event === "fill" || data.type === "fill" || data.payload?.event === "fill") {
+        const fill = data.payload || data;  // 兼容不同嵌套
 
-        if (shares >= 1000 && fill.side?.toLowerCase() === "buy") {
-          const text = `🚨 <b>Polymarket 大额买入</b>\n\n` +
+        const maker = (fill.maker || fill.maker_address || "").toLowerCase();
+        const taker = (fill.taker || fill.taker_address || "").toLowerCase();
+        const side = (fill.side || fill.order_side || "").toLowerCase();
+        const shares = Number(fill.size || fill.amount || fill.quantity || fill.shares || 0);
+
+        // 只处理你的地址参与的买入，且 >=1000 shares
+        if ((maker === ADDRESS || taker === ADDRESS) &&
+            shares >= 1000 &&
+            side === "buy") {
+
+          const text = `🚨 <b>你的地址大额买入</b>\n\n` +
                        `Shares: ${shares}\n` +
-                       `Price: ${fill.price ?? "—"} USDC\n` +
-                       `Market: ${fill.market ?? fill.condition_id ?? "—"}`;
+                       `Price: ${fill.price ?? fill.avg_price ?? fill.last_price ?? "—"} USDC\n` +
+                       `Market: ${fill.market ?? fill.condition_id ?? fill.token_id ?? "未知"}\n` +
+                       `Maker: ${maker.slice(0,6)}...${maker.slice(-4)}\n` +
+                       `Taker: ${taker.slice(0,6)}...${taker.slice(-4)}`;
 
           await sendTG(text);
-        }
-      }
-
-      // 如果将来变成了 data.type 格式（备用）
-      else if (data.type === "fill") {
-        const shares = Number(data.size ?? 0);
-        if (shares >= 1000 && data.side?.toLowerCase() === "buy") {
-          const text = `🚨 <b>Polymarket 大额买入</b>\n\n` +
-                       `Shares: ${shares}\n` +
-                       `Price: ${data.price ?? "—"} USDC\n` +
-                       `Market: ${data.market ?? "—"}`;
-
-          await sendTG(text);
+          console.log("已推送大额买入:", shares);
         }
       }
     } catch (err) {
-      console.error("解析 WS 消息失败:", err.message, msg.toString());
+      console.error("消息解析失败:", err.message, msg.toString().slice(0, 200));  // 截断避免日志过长
     }
   });
 
-  ws.on("close", () => {
-    console.log("WS 断开 → 3秒后重连");
+  ws.on("close", (code, reason) => {
+    console.log(`WS 断开 - code: ${code || "未知"}, reason: ${reason || "无"} → 3秒后重连`);
     setTimeout(connect, 3000);
   });
 
@@ -79,6 +85,5 @@ function connect() {
     ws.close();
   });
 }
-
 // 启动
 connect();
