@@ -1,0 +1,11 @@
+{
+  "name": "pm-monitor",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "axios": "^1.6.0"
+  }
+}
