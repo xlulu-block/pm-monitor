@@ -1,21 +1,17 @@
 import WebSocket from "ws";
 import axios from "axios";
 
-const ADDRESS = process.env.ADDRESS;
+const ADDRESS = (process.env.ADDRESS || "").toLowerCase();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
-console.log("ADDRESS=", process.env.ADDRESS);
-console.log("BOT_TOKEN exists=", !!process.env.BOT_TOKEN);const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws";
 
-async function sendTG(text) {
-  await axios.post(
-    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-    {
-      chat_id: CHAT_ID,
-      text,
-      parse_mode: "HTML"
-    }
-  );
+const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/websocket";
+
+function sendTG(text) {
+  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    chat_id: CHAT_ID,
+    text
+  });
 }
 
 function connect() {
@@ -25,16 +21,35 @@ function connect() {
     console.log("WS connected");
 
     ws.send(JSON.stringify({
-      type: "subscribe",
-      channel: ["user"],
-      address: ADDRESS
+      topic: `user:${ADDRESS}`,
+      event: "phx_join",
+      payload: {},
+      ref: "1"
     }));
   });
 
   ws.on("message", async (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
+    const data = JSON.parse(msg.toString());
 
+    if (data.event === "fill") {
+      const fill = data.payload;
+      const shares = Number(fill.size);
+
+      if (shares >= 1000 && fill.side === "buy") {
+        await sendTG(`🚨 Large BUY ${shares}`);
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    console.log("reconnect");
+    setTimeout(connect, 3000);
+  });
+
+  ws.on("error", () => ws.close());
+}
+
+connect();
       if (data.type === "fill") {
         const shares = Number(data.size);
 
