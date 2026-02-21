@@ -8,7 +8,8 @@ const POLL_URL = `https://data-api.polymarket.com/trades`;
 const POLL_INTERVAL_MS = 30000;  // 30秒
 const LIMIT = 20;
 
-let lastProcessedTimestamp = Date.now();  // 只监控启动后的新交易
+// 🔥 关键修复：重启后自动包含过去7天交易，不会再漏单
+let lastProcessedTimestamp = Date.now() - 7 * 24 * 60 * 60 * 1000;  
 const processedTradeKeys = new Set();
 
 async function sendTG(text) {
@@ -26,72 +27,56 @@ async function sendTG(text) {
 
 async function pollTrades() {
   try {
-    const params = {
-      user: ADDRESS,
-      limit: LIMIT,
-    };
-
+    const params = { user: ADDRESS, limit: LIMIT };
     const res = await axios.get(POLL_URL, { params });
     const trades = res.data || [];
-
-    if (!Array.isArray(trades)) {
-      console.warn("Trades 不是数组:", trades);
-      return;
-    }
 
     console.log(`拉取到 ${trades.length} 条 trades`);
 
     let hasNew = false;
 
     for (const trade of trades) {
-      // timestamp 处理：假设秒或 ms，兼容字符串
       let timestampRaw = trade.timestamp || trade.createdAt || 0;
       let timestamp = Number(timestampRaw);
       if (isNaN(timestamp)) timestamp = 0;
-      if (timestamp < 1e12) timestamp *= 1000;  // 秒转 ms
+      if (timestamp < 1e12) timestamp *= 1000;
 
       const shares = Number(trade.size || trade.amount || 0);
       const side = (trade.side || "").toUpperCase();
       const price = trade.price ?? trade.avgPrice ?? "—";
 
-      // 日志：详细打印
-      console.log(`检查 trade: ts=${timestamp} (${new Date(timestamp).toLocaleString() || '无效'}), side=${side}, shares=${shares}, price=${price}, conditionId=${trade.conditionId || '无'}`);
+      console.log(`检查 trade: ts=${timestamp} (${new Date(timestamp).toLocaleString()}), side=${side}, shares=${shares}`);
 
       if (timestamp <= lastProcessedTimestamp || timestamp === 0) {
-        console.log(`跳过: ts <= lastProcessedTimestamp 或无效`);
+        console.log(`跳过: ts <= lastProcessedTimestamp`);
         continue;
       }
 
-      // 防重 key
       const tradeKey = `${timestamp}-${side}-${shares}-${price}`;
-      if (processedTradeKeys.has(tradeKey)) {
-        console.log(`跳过已处理 key: ${tradeKey}`);
-        continue;
-      }
+      if (processedTradeKeys.has(tradeKey)) continue;
 
       if (shares >= 1000 && (side === "BUY" || side === "SELL")) {
-        const alertType = side === "BUY" ? "大额买入" : "大额卖出";
-        const market = trade.conditionId || trade.title || trade.slug || "未知";
+        const alertType = side === "BUY" ? "🚀 大额买入" : "🔴 大额卖出";
+        const market = trade.title || trade.slug || trade.conditionId || "未知市场";
         const outcome = trade.outcome || "—";
 
-        const text = `🚨 <b>Polymarket ${alertType} (你的地址)</b>\n\n` +
-                     `Shares: ${shares}\n` +
+        const text = `${alertType}\n\n` +
+                     `Shares: ${shares.toLocaleString()}\n` +
                      `Price: ${price} USDC\n` +
                      `Outcome: ${outcome}\n` +
                      `Market: ${market}\n` +
-                     `Time: ${new Date(timestamp).toLocaleString() || "—"}`;
+                     `Time: ${new Date(timestamp).toLocaleString()}`;
 
         await sendTG(text);
 
         processedTradeKeys.add(tradeKey);
-        console.log(`推送并记录 key: ${tradeKey}`);
+        console.log(`✅ 推送成功并记录: ${alertType} ${shares} shares`);
         hasNew = true;
       }
 
-      // 更新 ts
       if (timestamp > lastProcessedTimestamp) {
         lastProcessedTimestamp = timestamp;
-        console.log(`更新 lastProcessedTimestamp → ${timestamp}`);
+        console.log(`更新 lastProcessedTimestamp → ${new Date(timestamp).toLocaleString()}`);
       }
     }
 
@@ -100,16 +85,12 @@ async function pollTrades() {
     }
   } catch (err) {
     console.error("轮询失败:", err.message);
-    if (err.response) console.error("状态:", err.response.status, "数据:", JSON.stringify(err.response.data || {}));
   }
 }
 
 // 启动
-console.log(`监控启动 - 地址: ${ADDRESS} | 间隔: ${POLL_INTERVAL_MS/1000}s | 只新交易`);
+console.log(`✅ 监控启动 - 地址: ${ADDRESS} | 间隔: 30s | 包含最近7天交易`);
 setInterval(pollTrades, POLL_INTERVAL_MS);
-pollTrades();
+pollTrades();   // 立即执行一次
 
-process.on("SIGTERM", () => {
-  console.log("进程终止");
-  process.exit(0);
-});
+process.on("SIGTERM", () => process.exit(0));
