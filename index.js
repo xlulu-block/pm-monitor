@@ -37,7 +37,7 @@ async function pollTrades() {
 
       const shares = Number(trade.size || trade.amount || 0);
       const side = (trade.side || "").toUpperCase();
-      const price = Number(trade.price ?? trade.avgPrice || 0).toFixed(4);
+      const price = Number(trade.price ? (trade.avgPrice || 0) : 0).toFixed(4);
 
       const tradeKey = `${timestamp}-${side}-${shares}`;
 
