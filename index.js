@@ -26,68 +26,67 @@ async function sendTG(text) {
 
 async function pollTrades() {
   try {
-    const res = await axios.get(POLL_URL, { params: { user: ADDRESS, limit: 30 } });
-    let trades = res.data || [];
+    const params = {
+      user: ADDRESS,
+      limit: 100,   // ← 改大一点，防止爆单时漏
+    };
+
+    const res = await axios.get(POLL_URL, { params });
+    const trades = res.data || [];
 
     console.log(`拉取到 ${trades.length} 条 trades`);
 
-    // 排序按时间升序（旧到新）
-    trades = trades.sort((a, b) => {
-      let tsA = Number(a.timestamp || a.createdAt || 0);
-      let tsB = Number(b.timestamp || b.createdAt || 0);
-      if (tsA < 1e12) tsA *= 1000;
-      if (tsB < 1e12) tsB *= 1000;
-      return tsA - tsB;
-    });
-
-    let maxTimestamp = lastProcessedTimestamp;
+    let hasNew = false;
+    let newMaxTimestamp = lastProcessedTimestamp;   // ← 新增：收集本轮最大时间戳
 
     for (const trade of trades) {
-      let timestamp = Number(trade.timestamp || trade.createdAt || 0);
-      if (timestamp < 1e12) timestamp *= 1000;  // 秒转毫秒
+      let timestampRaw = trade.timestamp || trade.createdAt || 0;
+      let timestamp = Number(timestampRaw);
+      if (isNaN(timestamp)) timestamp = 0;
+      if (timestamp < 1e12) timestamp *= 1000;
 
       const shares = Number(trade.size || trade.amount || 0);
       const side = (trade.side || "").toUpperCase();
-      const price = Number(trade.price ? (trade.avgPrice || 0) : 0).toFixed(4);
+      const price = trade.price ?? trade.avgPrice ?? "—";
 
-      const tradeKey = `${timestamp}-${side}-${shares}`;
+      console.log(`检查 trade: ts=${timestamp} (${new Date(timestamp).toLocaleString()}), side=${side}, shares=${shares}`);
 
-      if (timestamp <= lastProcessedTimestamp || processedTradeKeys.has(tradeKey)) {
+      if (timestamp <= lastProcessedTimestamp || timestamp === 0) {
+        console.log(`跳过: ts <= lastProcessedTimestamp 或无效`);
+        continue;
+      }
+
+      const tradeKey = `${timestamp}-${side}-${shares}-${price}`;
+      if (processedTradeKeys.has(tradeKey)) {
+        console.log(`跳过已处理 key`);
         continue;
       }
 
       if (shares >= 1000 && (side === "BUY" || side === "SELL")) {
-        const alertType = side === "BUY" ? "🚀 大额买入" : "🔴 大额卖出";
-        
-        const market = trade.title || trade.slug || "未知市场";
-        const outcome = trade.outcome || "—";
-
-        const timeStr = new Date(timestamp).toLocaleString('zh-CN', {
-          timeZone: 'Asia/Shanghai',
-          hour12: false
-        });
-
-        const text = `${alertType}\n\n` +
-                     `Shares: ${shares.toLocaleString()}\n` +
-                     `Price: ${price} USDC\n` +
-                     `Outcome: ${outcome}\n` +
-                     `Market: ${market}\n` +
-                     `Time: ${timeStr} (北京时间)`;
-
+        const alertType = side === "BUY" ? "大额买入" : "大额卖出";
+        const text = `🚨 ${alertType}\nShares: ${shares}\nPrice: ${price} USDC\nTime: ${new Date(timestamp).toLocaleString()}`;
         await sendTG(text);
 
         processedTradeKeys.add(tradeKey);
-        console.log(`✅ 推送成功: ${alertType} ${shares} shares - ${market}`);
+        console.log(`✅ 推送并记录 key: ${tradeKey}`);
+        hasNew = true;
       }
 
-      if (timestamp > maxTimestamp) {
-        maxTimestamp = timestamp;
+      // ←←←← 改这里：只记录最大时间戳，不立即更新
+      if (timestamp > newMaxTimestamp) {
+        newMaxTimestamp = timestamp;
       }
     }
 
-    // 统一更新到最大 ts
-    lastProcessedTimestamp = maxTimestamp;
+    // ←←←←← 循环结束后一次性更新
+    if (newMaxTimestamp > lastProcessedTimestamp) {
+      lastProcessedTimestamp = newMaxTimestamp;
+      console.log(`更新 lastProcessedTimestamp → ${newMaxTimestamp}`);
+    }
 
+    if (!hasNew && trades.length > 0) {
+      console.log("无新大额交易（所有已跳过或历史）");
+    }
   } catch (err) {
     console.error("轮询失败:", err.message);
   }
