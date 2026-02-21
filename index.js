@@ -27,37 +27,40 @@ async function sendTG(text) {
 async function pollTrades() {
   try {
     const params = {
-      user: ADDRESS,        // ← 保持你配置文件里的地址，不用改
+      user: ADDRESS,
       limit: 200,
-      takerOnly: false,     // ← 必须！因为你全是限价单（Maker）
+      takerOnly: false,     // 必须保留，因为你全是限价单（Maker）
     };
 
     const res = await axios.get(POLL_URL, { params });
     const trades = res.data || [];
 
-    console.log(`✅ 拉取到 ${trades.length} 条 trades (takerOnly=false)`);
+    console.log(`✅ 拉取到 ${trades.length} 条 trades`);
 
-    // 调试：打印最新一笔（让你一眼看到是否拉到 2/21 的单）
+    // 先找出最新一笔，给你快速预览
     if (trades.length > 0) {
       const latest = trades[0];
-      console.log(`最新交易: ${latest.side} ${Number(latest.size).toFixed(2)} shares | 时间: ${new Date(latest.timestamp * 1000).toLocaleString('zh-CN')} | 市场: ${latest.title}`);
+      let ts = Number(latest.timestamp || 0);
+      if (ts < 10000000000) ts *= 1000;
+      console.log(`最新一笔: ${latest.side} ${Number(latest.size).toFixed(2)} shares | ${new Date(ts).toLocaleString('zh-CN')} | ${latest.title}`);
     }
 
     let hasNew = false;
     let newMaxTimestamp = lastProcessedTimestamp;
 
+    // 只对可能的新交易进行详细检查（日志干净）
     for (const trade of trades) {
       let timestamp = Number(trade.timestamp || 0);
-      if (timestamp < 10000000000) timestamp *= 1000;   // 秒 → 毫秒（关键修复）
+      if (timestamp < 10000000000) timestamp *= 1000;
+
+      if (timestamp <= lastProcessedTimestamp || timestamp === 0) continue;   // 旧的直接跳过，不打印
 
       const shares = Number(trade.size || 0);
       const side = (trade.side || "").toUpperCase();
       const price = trade.price ?? "—";
       const market = (trade.title || "未知市场").slice(0, 80);
 
-      console.log(`检查: ${new Date(timestamp).toLocaleString('zh-CN')} | ${side} | ${shares.toFixed(2)} shares | ${market}`);
-
-      if (timestamp <= lastProcessedTimestamp || timestamp === 0) continue;
+      console.log(`检查新交易: ${new Date(timestamp).toLocaleString('zh-CN')} | ${side} | ${shares.toFixed(2)} shares | ${market}`);
 
       const tradeKey = `${timestamp}-${side}-${shares.toFixed(2)}`;
       if (processedTradeKeys.has(tradeKey)) continue;
@@ -69,7 +72,7 @@ async function pollTrades() {
 
         await sendTG(text);
         processedTradeKeys.add(tradeKey);
-        console.log(`✅ 已推送: ${shares} ${side} ${market}`);
+        console.log(`✅ 已推送: ${shares} ${side}`);
         hasNew = true;
       }
 
