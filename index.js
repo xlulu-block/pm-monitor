@@ -27,21 +27,20 @@ async function sendTG(text) {
 async function pollTrades() {
   try {
     const params = {
-      user: ADDRESS,
-      limit: 200,          // 拉更多，防止爆单漏
-      takerOnly: false,    // ← 关键！包含 Maker（你的卖出）和 Taker
+      user: ADDRESS,        // ← 保持你配置文件里的地址，不用改
+      limit: 200,
+      takerOnly: false,     // ← 必须！因为你全是限价单（Maker）
     };
 
     const res = await axios.get(POLL_URL, { params });
     const trades = res.data || [];
 
-    console.log(`拉取到 ${trades.length} 条 trades (takerOnly=false)`);
+    console.log(`✅ 拉取到 ${trades.length} 条 trades (takerOnly=false)`);
 
-    // 调试用：打印第一笔（最新）的 proxyWallet 和时间
+    // 调试：打印最新一笔（让你一眼看到是否拉到 2/21 的单）
     if (trades.length > 0) {
-      const first = trades[0];
-      console.log(`最新 trade proxyWallet: ${first.proxyWallet || '无'}`);
-      console.log(`最新 trade 时间: ${new Date(first.timestamp).toLocaleString()} side=${first.side} size=${first.size}`);
+      const latest = trades[0];
+      console.log(`最新交易: ${latest.side} ${Number(latest.size).toFixed(2)} shares | 时间: ${new Date(latest.timestamp * 1000).toLocaleString('zh-CN')} | 市场: ${latest.title}`);
     }
 
     let hasNew = false;
@@ -49,29 +48,28 @@ async function pollTrades() {
 
     for (const trade of trades) {
       let timestamp = Number(trade.timestamp || 0);
-      if (timestamp < 1e12) timestamp *= 1000;  // 确保是毫秒
+      if (timestamp < 10000000000) timestamp *= 1000;   // 秒 → 毫秒（关键修复）
 
       const shares = Number(trade.size || 0);
       const side = (trade.side || "").toUpperCase();
       const price = trade.price ?? "—";
+      const market = (trade.title || "未知市场").slice(0, 80);
 
-      console.log(`检查 trade: ts=${timestamp} (${new Date(timestamp).toLocaleString()}), side=${side}, shares=${shares}`);
+      console.log(`检查: ${new Date(timestamp).toLocaleString('zh-CN')} | ${side} | ${shares.toFixed(2)} shares | ${market}`);
 
-      if (timestamp <= lastProcessedTimestamp || timestamp === 0) {
-        console.log(`跳过: ts <= lastProcessedTimestamp 或无效`);
-        continue;
-      }
+      if (timestamp <= lastProcessedTimestamp || timestamp === 0) continue;
 
-      const tradeKey = `${timestamp}-${side}-${shares}-${price}`;
+      const tradeKey = `${timestamp}-${side}-${shares.toFixed(2)}`;
       if (processedTradeKeys.has(tradeKey)) continue;
 
       if (shares >= 1000 && (side === "BUY" || side === "SELL")) {
-        const alertType = side === "BUY" ? "🚨 大额买入" : "🚨 大额卖出";
-        const text = `${alertType}\nShares: ${shares}\nPrice: ${price} USDC\nTime: ${new Date(timestamp).toLocaleString()}`;
-        await sendTG(text);
+        const emoji = side === "BUY" ? "📈" : "📉";
+        const alertType = side === "BUY" ? "大额买入" : "大额卖出";
+        const text = `${emoji} ${alertType}\n市场: ${market}\n数量: ${shares.toFixed(2)} shares\n价格: ${price} USDC\n时间: ${new Date(timestamp).toLocaleString('zh-CN')}`;
 
+        await sendTG(text);
         processedTradeKeys.add(tradeKey);
-        console.log(`✅ 推送并记录 key: ${tradeKey}`);
+        console.log(`✅ 已推送: ${shares} ${side} ${market}`);
         hasNew = true;
       }
 
@@ -80,7 +78,7 @@ async function pollTrades() {
 
     if (newMaxTimestamp > lastProcessedTimestamp) {
       lastProcessedTimestamp = newMaxTimestamp;
-      console.log(`更新 lastProcessedTimestamp → ${newMaxTimestamp}`);
+      console.log(`更新 lastProcessedTimestamp`);
     }
 
     if (!hasNew) console.log("本轮无新大额交易");
